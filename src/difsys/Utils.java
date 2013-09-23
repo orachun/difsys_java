@@ -38,6 +38,10 @@ public class Utils
 	{
 		return Integer.parseInt(P.getProperty(key));
 	}
+	public static long propLong(String key)
+	{
+		return Long.parseLong(P.getProperty(key));
+	}
 	public static double propDouble(String key)
 	{
 		return Double.parseDouble(P.getProperty(key));
@@ -58,5 +62,9 @@ public class Utils
 	public static boolean fileExists(String filepath)
 	{
 		return new File(filepath).exists();
+	}
+	public static String fileName(String filepath)
+	{
+		return new File(filepath).getName();
 	}
 }
