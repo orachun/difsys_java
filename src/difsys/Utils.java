@@ -7,6 +7,7 @@ package difsys;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.Date;
 import java.util.Properties;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -66,5 +67,9 @@ public class Utils
 	public static String fileName(String filepath)
 	{
 		return new File(filepath).getName();
+	}
+	public static long time()
+	{
+		return new Date().getTime()/1000;
 	}
 }

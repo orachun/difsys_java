@@ -39,7 +39,7 @@ public class DifsysFile
 	private static int cachedPieces = 0;
 	private static DBCollection coll;
 	private static final ConcurrentHashMap<String, DifsysFile> files = new ConcurrentHashMap<>();
-	private static final DifsysFile root;
+	private static DifsysFile root;
 	static
 	{
 		try
@@ -50,8 +50,16 @@ public class DifsysFile
 		{
 			Logger.getLogger(DifsysFile.class.getName()).log(Level.SEVERE, null, ex);
 		}
+	}
+	public static void init()
+	{
 		root = DifsysFile.get("/", true, true);
 		files.put("/", root);
+	}
+	class PieceContent
+	{
+		byte[] content = new byte[PIECE_SIZE];
+		boolean edited = false;
 	}
 	
 	public String fullPath;
@@ -59,9 +67,18 @@ public class DifsysFile
 	public boolean isDir;
 	public TreeSet<String> dirContents;
 	private File f;
-//	private ArrayList<byte[]> contents;
-	private HashMap<Integer, byte[]> contents;
+	private ConcurrentHashMap<Integer, PieceContent> contents;
 	private boolean noFlush = false;
+	public final Object FILEPIECE_LOCK = new Object();
+	
+	
+	private long ctime = Utils.time();
+	private long atime = Utils.time();
+	private long mtime = Utils.time();
+//	public long mode;
+//	public int uid;
+//	public int gid;
+	
 	
 	private DifsysFile(String path, boolean isDir)
 	{
@@ -80,7 +97,7 @@ public class DifsysFile
 		}
 		else
 		{
-			contents = new HashMap<>();
+			contents = new ConcurrentHashMap<>();
 		}
 		addDirContent();
 	}
@@ -134,38 +151,54 @@ public class DifsysFile
 	{
 		stat.setMode(isDir ? TypeMode.NodeType.DIRECTORY : TypeMode.NodeType.FILE);
 		stat.size(size);
+		stat.atime(atime);
+		stat.ctime(ctime);
+		stat.mtime(mtime);
 	}
 	
-	private byte[] getPieceContent(int pieceNo)
+	private PieceContent getPieceContent(int pieceNo)
 	{
 		if(cachedPieces*(long)PIECE_SIZE > Utils.propLong("max_cached_content"))
 		{
-			this.flushContentCache();
+			this.flushContentCache(pieceNo);
 		}
-		byte[] content = null;
-		try
-		{
-			content = this.contents.get(pieceNo);
-		}
-		catch(IndexOutOfBoundsException ex){}
+		System.out.println("Getting "+fullPath+" "+pieceNo);
+		PieceContent content = this.contents.get(pieceNo);
 		if(content == null)
 		{
-			content = new byte[PIECE_SIZE];
-			String filename = STORAGE_DIR+fullPath+'.'+(pieceNo);
-			FileInputStream fis;
-			try
+			content = new PieceContent();
+			if(pieceNo < Math.ceil(this.size / (double)PIECE_SIZE))
 			{
-				fis = new FileInputStream(new File(filename));
-				fis.read(content);
-				fis.close();
+				String filename = STORAGE_DIR+fullPath+'.'+(pieceNo);
+				FileInputStream fis;
+				synchronized(FILEPIECE_LOCK)
+				{
+					noFlush = true;
+					while(!Utils.fileExists(filename))
+					{
+						try
+						{
+							FILEPIECE_LOCK.wait(Utils.propInt("piece_wait_timeout"));
+						}
+						catch (InterruptedException ex){}
+					}
+					noFlush = false;
+				}
+				try
+				{
+					System.out.println("Reading "+filename);
+					fis = new FileInputStream(new File(filename));
+					fis.read(content.content);
+					fis.close();
+				}
+				catch (FileNotFoundException ex)
+				{}
+				catch (IOException ex)
+				{
+					Logger.getLogger(DifsysFile.class.getName()).log(Level.SEVERE, null, ex);
+				}
 			}
-			catch (FileNotFoundException ex)
-			{}
-			catch (IOException ex)
-			{
-				Logger.getLogger(DifsysFile.class.getName()).log(Level.SEVERE, null, ex);
-			}
-			if(pieceNo >= this.contents.size())
+			else
 			{
 				cachedPieces++;
 			}
@@ -174,9 +207,27 @@ public class DifsysFile
 		return content;
 	}
 	
-	public long setContent(long offset, long size, ByteBuffer buff)
+	public long setContent(final long offset, final long size, ByteBuffer buff)
 	{
 		Utils.mkdir(STORAGE_DIR+getParent());
+		
+		System.out.println("Writing "+fullPath+" "+size);
+		long total_len = size;
+		long write_offset = offset;
+		long write_size = size;
+        while (write_size > 0)
+		{
+            int content_offset = (int)(write_offset % PIECE_SIZE);
+            long file_offset = write_offset - content_offset;
+            int space_length = PIECE_SIZE - content_offset;
+			int pieceNo = (int)(file_offset/PIECE_SIZE);
+			int write_length = (int)Math.min(space_length, write_size);
+			PieceContent content = getPieceContent(pieceNo);
+			buff.get(content.content, content_offset, write_length);
+			content.edited = true;
+			write_size -= write_length;
+			write_offset += write_length;
+		}
 		
 		//Update size
         if (this.size < offset + size)
@@ -184,19 +235,7 @@ public class DifsysFile
             this.size = offset + size;
 		}
 		
-		long total_len = size;
-        while (size > 0)
-		{
-            int content_offset = (int)(offset % PIECE_SIZE);
-            long file_offset = offset - content_offset;
-            int space_length = PIECE_SIZE - content_offset;
-			int pieceNo = (int)(file_offset/PIECE_SIZE);
-			byte[] content = getPieceContent(pieceNo);
-			int write_length = (int)Math.min(space_length, size);
-			buff.get(content, content_offset, write_length);
-			offset += write_length;
-			size -= write_length;
-		}
+		mtime = Utils.time();
 		return total_len;
 	}
 	public int getContent(ByteBuffer output,long offset, long size )
@@ -209,13 +248,14 @@ public class DifsysFile
             int content_offset = (int)(offset % PIECE_SIZE);
             long file_offset = offset - content_offset;
 			int pieceNo = (int)(file_offset/PIECE_SIZE);
-            byte[] content = getPieceContent(pieceNo);
+            PieceContent content = getPieceContent(pieceNo);
 			int read_size = (int)Math.min(PIECE_SIZE-content_offset, size);
-			output.put(content, content_offset, read_size);
+			output.put(content.content, content_offset, read_size);
             size = size - read_size;
             offset = offset + read_size;
 			read += read_size;
 		}
+		atime = Utils.time();
 		return read;
 	}
 	
@@ -236,7 +276,7 @@ public class DifsysFile
 		{
 			for(int i=contents.size();i<pieceNo+1;i++)
 			{
-				contents.put(i, new byte[PIECE_SIZE]);				
+				contents.put(i, new PieceContent());				
 				cachedPieces++;
 			}
 		}
@@ -267,20 +307,23 @@ public class DifsysFile
 		parent.updateToDB();
 	}
 	
-	private void flushContentCache()
+	private void flushContentCache(int except)
 	{
-		long written_size = 0;
-		for(int i=0;i<contents.size();i++)
+		System.out.println("Flushing "+fullPath);
+		for(int i : contents.keySet())
 		{
 			String filename = STORAGE_DIR+fullPath+'.'+i;
 			FileOutputStream fos;
 			try
 			{
-				fos = new FileOutputStream(filename);
-				int writeSize = (int)Math.min(size-written_size, PIECE_SIZE);
-				fos.write(contents.get(i), 0, writeSize);
-				fos.close();
-				written_size += writeSize;
+				PieceContent content = contents.get(i);
+				if(content.edited)
+				{
+					fos = new FileOutputStream(filename);
+					int writeLength = (int)(Math.min((i+1)*PIECE_SIZE, size)-i*PIECE_SIZE);
+					fos.write(content.content, 0, writeLength);
+					fos.close();
+				}
 			}
 			catch (IOException ex)
 			{
@@ -288,25 +331,35 @@ public class DifsysFile
 			}
 		}
 		cachedPieces-=contents.size();
+		PieceContent exceptPiece = contents.get(except);
 		contents.clear();
+		if(exceptPiece!=null)
+		{
+			contents.put(except, exceptPiece);
+			cachedPieces++;
+		}
+		System.gc();
 	}
 	
 	private BasicDBObject toBson()
 	{
-		BasicDBObject obj = new BasicDBObject("path", this.fullPath).
-                              append("size", this.size).
-                              append("is_dir", this.isDir);
-			if(this.isDir)
+		BasicDBObject obj = new BasicDBObject("path", this.fullPath)
+				.append("size", this.size)
+				.append("is_dir", this.isDir)
+				.append("ctime", ctime)
+				.append("atime", atime)
+				.append("mtime", mtime);
+		if (this.isDir)
+		{
+			BasicDBObject dirContent = new BasicDBObject();
+			int i = 0;
+			for (String cf : this.dirContents)
 			{
-				BasicDBObject dirContent = new BasicDBObject();
-				int i=0;
-				for(String cf : this.dirContents)
-				{
-					dirContent.append(i++ + "", cf);
-				}
-				obj.append("dir_content", dirContent);
+				dirContent.append(i++ + "", cf);
 			}
-			return obj;
+			obj.append("dir_content", dirContent);
+		}
+		return obj;
 	}
 	private void updateToDB()
 	{
@@ -326,13 +379,14 @@ public class DifsysFile
 			f.updateToDB();
 			if(!f.isDir)
 			{
-				f.flushContentCache();
+				f.flushContentCache(-1);
 			}
 		}
 		
 		files.clear();
 		files.putAll(noFlush);
 		files.put("/", root);
+		System.gc();
 	}
 	private static DifsysFile readToCache(String path)
 	{
@@ -342,6 +396,9 @@ public class DifsysFile
 		{
 			f = new DifsysFile(path, Boolean.parseBoolean(obj.get("is_dir").toString()));
 			f.size = Long.parseLong(obj.get("size").toString());
+			f.ctime = Long.parseLong(obj.get("ctime").toString());
+			f.mtime = Long.parseLong(obj.get("mtime").toString());
+			f.atime = Long.parseLong(obj.get("atime").toString());
 			if(f.isDir)
 			{
 				DBObject dirContent = (DBObject)obj.get("dir_content");

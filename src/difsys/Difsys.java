@@ -30,6 +30,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 		Utils.initP();
 		Utils.mkdir(Utils.prop("storage_dir"));
 		Utils.mkdir(Utils.prop("mount_dir"));
+		DifsysFile.init();
 	}
 
 	@Override
@@ -56,6 +57,19 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 		else if(filename.startsWith("flush"))
 		{
 			DifsysFile.flushCache();
+		}
+		else if(filename.startsWith("gc"))
+		{
+			System.gc();
+		}
+		else if(filename.startsWith("piece_created"))
+		{
+			filename = path.replace(Utils.prop("cmd_prefix"), "").replace("piece_created.", "");
+			DifsysFile f = DifsysFile.get(filename);
+			synchronized(f.FILEPIECE_LOCK)
+			{
+				f.FILEPIECE_LOCK.notifyAll();
+			}
 		}
 	}
 
@@ -220,7 +234,6 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 	public int write(final String path, final ByteBuffer buf, final long bufSize, final long writeOffset,
 			final StructFuseFileInfo.FileInfoWrapper wrapper)
 	{
-
 		DifsysFile f = DifsysFile.get(path, true, false);
 		if (f == null)
 		{
