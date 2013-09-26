@@ -4,20 +4,22 @@
  */
 package difsys;
 
+import com.mongodb.BasicDBList;
 import com.mongodb.BasicDBObject;
 import com.mongodb.DBCollection;
 import com.mongodb.DBObject;
 import com.mongodb.Mongo;
 import java.io.File;
+import java.io.FileFilter;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
-import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import net.fusejna.StructStat;
@@ -29,6 +31,8 @@ import net.fusejna.types.TypeMode;
  */
 public class DifsysFile 
 {
+	private static int count = 0;
+	private int id = count++;
 	public static final String DB_HOST = Utils.prop("db_host");
 	public static final int DB_PORT = Utils.propInt("db_port");
 	public static final String DB_NAME = Utils.prop("db_name");
@@ -39,6 +43,7 @@ public class DifsysFile
 	private static int cachedPieces = 0;
 	private static DBCollection coll;
 	private static final ConcurrentHashMap<String, DifsysFile> files = new ConcurrentHashMap<>();
+//	private static final ConcurrentLinkedQueue<String> deletedFiles = new ConcurrentLinkedQueue<>();
 	private static DifsysFile root;
 	static
 	{
@@ -54,7 +59,6 @@ public class DifsysFile
 	public static void init()
 	{
 		root = DifsysFile.get("/", true, true);
-		files.put("/", root);
 	}
 	class PieceContent
 	{
@@ -62,7 +66,7 @@ public class DifsysFile
 		boolean edited = false;
 	}
 	
-	public String fullPath;
+	private String fullPath;
 	public long size;
 	public boolean isDir;
 	public TreeSet<String> dirContents;
@@ -70,7 +74,7 @@ public class DifsysFile
 	private ConcurrentHashMap<Integer, PieceContent> contents;
 	private boolean noFlush = false;
 	public final Object FILEPIECE_LOCK = new Object();
-	
+	private boolean isDeleted = false;
 	
 	private long ctime = Utils.time();
 	private long atime = Utils.time();
@@ -85,7 +89,7 @@ public class DifsysFile
 		if(files.size() > Utils.propInt("max_cached_files") || 
 				cachedPieces*(long)PIECE_SIZE > Utils.propLong("max_cached_content"))
 		{
-			flushCache();
+			flushCache(false);
 		}
 		this.fullPath = path;
 		this.isDir = isDir;
@@ -111,6 +115,10 @@ public class DifsysFile
 		DifsysFile f = files.get(path);
 		if(f == null)
 		{
+//			if(!deletedFiles.contains(path))
+//			{
+//				f = readToCache(path);
+//			}
 			f = readToCache(path);
 			if(f == null && createIfNotExist)
 			{
@@ -118,20 +126,53 @@ public class DifsysFile
 			}
 			if(f != null)
 			{
+//				deletedFiles.remove(path);
 				files.put(path, f);
 			}
 		}
 		return f;
 	}
-	
+	public void setPath(String fullPath)
+	{
+		this.fullPath = fullPath;
+		this.f = new File(fullPath);
+	}
 	private void addDirContent()
 	{
 		if(!this.fullPath.equals("/"))
 		{
 			this.noFlush = true;
-			DifsysFile.get(getParent()).dirContents.add(this.getName());
+			DifsysFile parent = DifsysFile.get(getParent(), true, false);
+			parent.dirContents.add(this.getName());
 			this.noFlush = false;
 		}
+	}
+	
+	public void move(String newName)
+	{
+		final String oldPath = this.fullPath;
+		files.remove(fullPath);
+		DifsysFile oldParent = DifsysFile.get(f.getParent(), true, false);
+		oldParent.dirContents.remove(f.getName());
+
+		FileFilter ff = new FileFilter() {
+
+			@Override
+			public boolean accept(File pathname)
+			{
+				return pathname.getAbsolutePath().replace(STORAGE_DIR, "").startsWith(oldPath);
+			}
+		};
+		for(File pf : new File(STORAGE_DIR).listFiles(ff))
+		{
+			String newFilePath = pf.getAbsolutePath().replace(oldPath, newName);
+			pf.renameTo(new File(newFilePath));
+		}
+		
+		
+		this.setPath(newName);
+		this.addDirContent();
+		files.put(newName, this);
 	}
 	
 	public static boolean exists(String path)
@@ -162,11 +203,12 @@ public class DifsysFile
 		{
 			this.flushContentCache(pieceNo);
 		}
-		System.out.println("Getting "+fullPath+" "+pieceNo);
 		PieceContent content = this.contents.get(pieceNo);
 		if(content == null)
 		{
 			content = new PieceContent();
+			
+			//If this piece has content
 			if(pieceNo < Math.ceil(this.size / (double)PIECE_SIZE))
 			{
 				String filename = STORAGE_DIR+fullPath+'.'+(pieceNo);
@@ -186,18 +228,17 @@ public class DifsysFile
 				}
 				try
 				{
-					System.out.println("Reading "+filename);
 					fis = new FileInputStream(new File(filename));
 					fis.read(content.content);
 					fis.close();
 				}
-				catch (FileNotFoundException ex)
-				{}
 				catch (IOException ex)
 				{
 					Logger.getLogger(DifsysFile.class.getName()).log(Level.SEVERE, null, ex);
 				}
 			}
+			
+			//If this is a new piece for writing content into
 			else
 			{
 				cachedPieces++;
@@ -211,7 +252,6 @@ public class DifsysFile
 	{
 		Utils.mkdir(STORAGE_DIR+getParent());
 		
-		System.out.println("Writing "+fullPath+" "+size);
 		long total_len = size;
 		long write_offset = offset;
 		long write_size = size;
@@ -236,6 +276,7 @@ public class DifsysFile
 		}
 		
 		mtime = Utils.time();
+		atime = mtime;
 		return total_len;
 	}
 	public int getContent(ByteBuffer output,long offset, long size )
@@ -300,16 +341,31 @@ public class DifsysFile
 				Logger.getLogger(DifsysFile.class.getName()).log(Level.SEVERE, null, ex);
 			}
 		}
-		files.remove(fullPath);
-		coll.remove(new BasicDBObject("path", fullPath));
-		DifsysFile parent = DifsysFile.get(this.getParent());
+		else
+		{
+			Utils.delete(STORAGE_DIR+fullPath);
+		}
+		DifsysFile parent = DifsysFile.get(this.getParent(), true, false);
+		//System.out.println("Remove "+this.getName()+" from "+parent.fullPath);
 		parent.dirContents.remove(this.getName());
-		parent.updateToDB();
+		//parent.updateToDB();
+		files.remove(fullPath);
+//		deletedFiles.add(fullPath);
+		if(this.isDir)
+		{
+			this.dirContents.clear();
+		}
+		else
+		{
+			this.contents.clear();
+		}
+		System.gc();
+		//System.out.println("Remove "+fullPath+" from DB.");
+		coll.remove(new BasicDBObject("path", fullPath));
 	}
 	
 	private void flushContentCache(int except)
 	{
-		System.out.println("Flushing "+fullPath);
 		for(int i : contents.keySet())
 		{
 			String filename = STORAGE_DIR+fullPath+'.'+i;
@@ -317,7 +373,7 @@ public class DifsysFile
 			try
 			{
 				PieceContent content = contents.get(i);
-				if(content.edited)
+				if(content != null && content.edited)
 				{
 					fos = new FileOutputStream(filename);
 					int writeLength = (int)(Math.min((i+1)*PIECE_SIZE, size)-i*PIECE_SIZE);
@@ -351,11 +407,10 @@ public class DifsysFile
 				.append("mtime", mtime);
 		if (this.isDir)
 		{
-			BasicDBObject dirContent = new BasicDBObject();
-			int i = 0;
+			BasicDBList dirContent = new BasicDBList();
 			for (String cf : this.dirContents)
 			{
-				dirContent.append(i++ + "", cf);
+				dirContent.add(cf);
 			}
 			obj.append("dir_content", dirContent);
 		}
@@ -363,30 +418,52 @@ public class DifsysFile
 	}
 	private void updateToDB()
 	{
+		//System.out.println("Save "+fullPath+" to DB.");
 		coll.update(new BasicDBObject("path", this.fullPath), this.toBson(), true, false);
 	}
 	
-	public synchronized static void flushCache()
+	public synchronized static void flushCache(boolean all)
 	{
-		HashMap<String, DifsysFile> noFlush = new HashMap<>();
+		long time = Utils.time();
+		long last_access_to_flush = Utils.propLong("last_access_to_flush");
+		long duration = Utils.propLong("flush_time_limit");
+		LinkedList<String> remove = new LinkedList<>();
 		for(String path: files.keySet())
 		{
 			DifsysFile f = files.get(path);
-			if(f.noFlush)
+			if(!all && !f.noFlush && time - f.atime < last_access_to_flush)
 			{
-				noFlush.put(path, f);
+				continue;
 			}
+			//System.out.println("Flushing "+f.fullPath);
 			f.updateToDB();
 			if(!f.isDir)
 			{
 				f.flushContentCache(-1);
 			}
+			remove.add(f.fullPath);
+			if(!all && Utils.time() - time > duration)
+			{
+				break;
+			}
 		}
-		
-		files.clear();
-		files.putAll(noFlush);
+		for(String path: remove)
+		{
+			files.remove(path);
+		}
 		files.put("/", root);
 		System.gc();
+		
+		
+//		if(deletedFiles.size() > Utils.propInt("max_cached_files"))
+//		{
+//			BasicDBList in = new BasicDBList();
+//			for(String deletedPath : deletedFiles)
+//			{
+//				in.add(deletedPath);
+//			}
+//			coll.remove(new BasicDBObject("path", new BasicDBObject("$in", in)));
+//		}
 	}
 	private static DifsysFile readToCache(String path)
 	{
@@ -422,5 +499,15 @@ public class DifsysFile
 	{
 		System.out.println("Cached Files: "+files.size());
 		System.out.printf("Cached Content: %.2f MB\n", cachedPieces*PIECE_SIZE/1024D/1024D);
+//		System.out.println("Files to delete: "+deletedFiles.size());
+	}
+	
+	public static void notifyPieceCreated(String path)
+	{
+		DifsysFile f = DifsysFile.get(path);
+		synchronized(f.FILEPIECE_LOCK)
+		{
+			f.FILEPIECE_LOCK.notifyAll();
+		}
 	}
 }

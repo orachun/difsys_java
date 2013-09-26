@@ -72,4 +72,8 @@ public class Utils
 	{
 		return new Date().getTime()/1000;
 	}
+	public static boolean isDir(String filepath)
+	{
+		return new File(filepath).isDirectory();
+	}
 }

@@ -13,6 +13,7 @@ import net.fusejna.FuseException;
 import net.fusejna.StructFuseFileInfo;
 import net.fusejna.StructStat;
 import net.fusejna.StructStat.StatWrapper;
+import net.fusejna.examples.MemoryFS;
 import net.fusejna.types.TypeMode;
 import net.fusejna.util.FuseFilesystemAdapterAssumeImplemented;
 
@@ -25,13 +26,18 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 
 	ConcurrentHashMap<String, StatWrapper> attrs = new ConcurrentHashMap<>();
 
-	public Difsys()
+	public Difsys() throws FuseException
 	{
+		System.out.println("Initializing file system...");
 		Utils.initP();
 		Utils.mkdir(Utils.prop("storage_dir"));
 		Utils.mkdir(Utils.prop("mount_dir"));
 		DifsysFile.init();
+		DifsysFile.get("/");
+		this.log(false).mount(new File(Utils.prop("mount_dir")), false);
+		System.out.println("Ready.");
 	}
+	
 
 	@Override
 	protected String[] getOptions()
@@ -44,7 +50,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 
 	public static void main(final String... args) throws FuseException
 	{
-		new Difsys().log(false).mount(Utils.prop("mount_dir"));
+		new Difsys();
 	}
 	
 	public void cmd(String path)
@@ -56,7 +62,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 		}
 		else if(filename.startsWith("flush"))
 		{
-			DifsysFile.flushCache();
+			DifsysFile.flushCache(true);
 		}
 		else if(filename.startsWith("gc"))
 		{
@@ -65,11 +71,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 		else if(filename.startsWith("piece_created"))
 		{
 			filename = path.replace(Utils.prop("cmd_prefix"), "").replace("piece_created.", "");
-			DifsysFile f = DifsysFile.get(filename);
-			synchronized(f.FILEPIECE_LOCK)
-			{
-				f.FILEPIECE_LOCK.notifyAll();
-			}
+			DifsysFile.notifyPieceCreated(filename);
 		}
 	}
 
@@ -78,7 +80,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public void afterUnmount(final File mountPoint)
 	{
-		DifsysFile.flushCache();
+		DifsysFile.flushCache(true);
 	}
 	
 	@Override
@@ -99,7 +101,8 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 		{
 			return -ErrorCodes.EEXIST();
 		}
-		DifsysFile.get(path);
+		DifsysFile.get(path, false, true);
+		//System.out.println("Create "+path);
 		return 0;
 	}
 
@@ -118,6 +121,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int mkdir(final String path, final TypeMode.ModeWrapper mode)
 	{
+		//System.out.println("$:mkdir "+path);
 		if (DifsysFile.exists(path))
 		{
 			return -ErrorCodes.EEXIST();
@@ -129,14 +133,12 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int open(final String path, final StructFuseFileInfo.FileInfoWrapper info)
 	{
-
 		return 0;
 	}
 
 	@Override
 	public int read(final String path, final ByteBuffer buffer, final long size, final long offset, final StructFuseFileInfo.FileInfoWrapper info)
 	{
-
 		DifsysFile f = DifsysFile.get(path, false, false);
 		if (f == null)
 		{
@@ -152,7 +154,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int readdir(final String path, final DirectoryFiller filler)
 	{
-
+		//System.out.println("$:ls "+path);
 		DifsysFile f = DifsysFile.get(path, true, false);
 		if (f == null)
 		{
@@ -170,15 +172,30 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int rename(final String path, final String newName)
 	{
-
-		System.out.println("Rename is not implemented.");
+		//System.out.println("$:mv "+path+" "+newName);
+		DifsysFile f = DifsysFile.get(path, true, false);
+		if (f == null)
+		{
+			return -ErrorCodes.ENOENT();
+		}
+		DifsysFile newParent = DifsysFile.get(Utils.parentDir(newName), true, false);
+		if (newParent == null) {
+			return -ErrorCodes.ENOENT();
+		}
+		if (!newParent.isDir) {
+			return -ErrorCodes.ENOTDIR();
+		}
+		
+		DifsysFile oldParent = DifsysFile.get(f.getParent(), true, false);
+		oldParent.dirContents.remove(f.getName());
+		f.move(newName);
 		return 0;
 	}
 
 	@Override
 	public int rmdir(final String path)
 	{
-
+		//System.out.println("$:rmdir "+path);
 		DifsysFile f = DifsysFile.get(path, true, false);
 		if (f == null)
 		{
@@ -216,7 +233,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int unlink(final String path)
 	{
-
+		//System.out.println("$:unlink "+path);
 		DifsysFile f = DifsysFile.get(path, true, false);
 		if (f == null)
 		{
@@ -227,6 +244,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 			return -ErrorCodes.EISDIR();
 		}
 		f.delete();
+		//System.out.println("Del "+path);
 		return 0;
 	}
 
