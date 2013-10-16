@@ -515,8 +515,4 @@ public class DifsysFile
 		f.addDirContent();
 	}
 	
-	public static void addPieceContent(String path, int no, byte[] content)
-	{
-		
-	}
 }
