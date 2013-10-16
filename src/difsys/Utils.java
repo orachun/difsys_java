@@ -19,12 +19,12 @@ import java.util.logging.Logger;
 public class Utils 
 {
 	private static Properties P;
-	public static void initP()
+	public static void initP(String configFileName)
 	{
 		P = new Properties();
 		try
 		{
-			P.load(new FileInputStream("difsys.conf"));
+			P.load(new FileInputStream(configFileName));
 		}
 		catch (IOException ex)
 		{

@@ -6,14 +6,11 @@ package difsys;
 
 import java.io.File;
 import java.nio.ByteBuffer;
-import java.util.concurrent.ConcurrentHashMap;
 import net.fusejna.DirectoryFiller;
 import net.fusejna.ErrorCodes;
 import net.fusejna.FuseException;
 import net.fusejna.StructFuseFileInfo;
 import net.fusejna.StructStat;
-import net.fusejna.StructStat.StatWrapper;
-import net.fusejna.examples.MemoryFS;
 import net.fusejna.types.TypeMode;
 import net.fusejna.util.FuseFilesystemAdapterAssumeImplemented;
 
@@ -23,18 +20,18 @@ import net.fusejna.util.FuseFilesystemAdapterAssumeImplemented;
  */
 public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 {
+	public final String CMD_PREFIX;
 
-	ConcurrentHashMap<String, StatWrapper> attrs = new ConcurrentHashMap<>();
-
-	public Difsys() throws FuseException
+	public Difsys(String rootDir, String configFileName) throws FuseException
 	{
 		System.out.println("Initializing file system...");
-		Utils.initP();
-		Utils.mkdir(Utils.prop("storage_dir"));
-		Utils.mkdir(Utils.prop("mount_dir"));
+		Utils.initP(configFileName);
+		Utils.mkdir(Utils.prop("fs_storage_dir"));
+		Utils.mkdir(rootDir);
+		CMD_PREFIX = Utils.prop("fs_cmd_prefix");
 		DifsysFile.init();
 		DifsysFile.get("/");
-		this.log(false).mount(new File(Utils.prop("mount_dir")), false);
+		this.log(false).mount(new File(rootDir), false);
 		System.out.println("Ready.");
 	}
 	
@@ -44,18 +41,18 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 	{
 		return new String[]
 		{
-			"-o", "max_write=" + Utils.prop("max_write"), "-o", "big_writes"
+			"-o", "max_write=" + Utils.prop("fs_max_write"), "-o", "big_writes"
 		};
 	}
-
-	public static void main(final String... args) throws FuseException
-	{
-		new Difsys();
-	}
+//
+//	public static void main(final String... args) throws FuseException
+//	{
+//		new Difsys();
+//	}
 	
 	public void cmd(String path)
 	{
-		String filename = Utils.fileName(path).replace(Utils.prop("cmd_prefix"), "");
+		String filename = Utils.fileName(path).replace(CMD_PREFIX, "");
 		if(filename.startsWith("status"))
 		{
 			DifsysFile.printStatus();
@@ -70,7 +67,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 		}
 		else if(filename.startsWith("piece_created"))
 		{
-			filename = path.replace(Utils.prop("cmd_prefix"), "").replace("piece_created.", "");
+			filename = path.replace(CMD_PREFIX, "").replace("piece_created.", "");
 			DifsysFile.notifyPieceCreated(filename);
 		}
 	}
@@ -92,7 +89,7 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int create(final String path, final TypeMode.ModeWrapper mode, final StructFuseFileInfo.FileInfoWrapper info)
 	{
-		if(Utils.fileName(path).startsWith(Utils.prop("cmd_prefix")))
+		if(Utils.fileName(path).startsWith(CMD_PREFIX))
 		{
 			cmd(path);
 			return 0;

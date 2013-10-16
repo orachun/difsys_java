@@ -16,10 +16,10 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import net.fusejna.StructStat;
@@ -33,12 +33,12 @@ public class DifsysFile
 {
 	private static int count = 0;
 	private int id = count++;
-	public static final String DB_HOST = Utils.prop("db_host");
-	public static final int DB_PORT = Utils.propInt("db_port");
-	public static final String DB_NAME = Utils.prop("db_name");
-	public static final String COLL_NAME = Utils.prop("collection_name");
-	public static final String STORAGE_DIR = Utils.prop("storage_dir");
-	public static final int PIECE_SIZE = Utils.propInt("piece_size");
+	public static final String DB_HOST = Utils.prop("fs_db_host");
+	public static final int DB_PORT = Utils.propInt("fs_db_port");
+	public static final String DB_NAME = Utils.prop("fs_db_name");
+	public static final String COLL_NAME = Utils.prop("fs_collection_name");
+	public static final String STORAGE_DIR = Utils.prop("fs_storage_dir");
+	public static final int PIECE_SIZE = Utils.propInt("fs_piece_size");
 	
 	private static int cachedPieces = 0;
 	private static DBCollection coll;
@@ -60,16 +60,12 @@ public class DifsysFile
 	{
 		root = DifsysFile.get("/", true, true);
 	}
-	class PieceContent
-	{
-		byte[] content = new byte[PIECE_SIZE];
-		boolean edited = false;
-	}
+	
 	
 	private String fullPath;
 	public long size;
 	public boolean isDir;
-	public TreeSet<String> dirContents;
+	public HashSet<String> dirContents;
 	private File f;
 	private ConcurrentHashMap<Integer, PieceContent> contents;
 	private boolean noFlush = false;
@@ -86,8 +82,8 @@ public class DifsysFile
 	
 	private DifsysFile(String path, boolean isDir)
 	{
-		if(files.size() > Utils.propInt("max_cached_files") || 
-				cachedPieces*(long)PIECE_SIZE > Utils.propLong("max_cached_content"))
+		if(files.size() > Utils.propInt("fs_max_cached_files") || 
+				cachedPieces*(long)PIECE_SIZE > Utils.propLong("fs_max_cached_content"))
 		{
 			flushCache(false);
 		}
@@ -97,7 +93,7 @@ public class DifsysFile
 		f = new File(fullPath);
 		if(isDir)
 		{
-			dirContents = new TreeSet<>();
+			dirContents = new HashSet<>();
 		}
 		else
 		{
@@ -197,9 +193,9 @@ public class DifsysFile
 		stat.mtime(mtime);
 	}
 	
-	private PieceContent getPieceContent(int pieceNo)
+	public PieceContent getPieceContent(int pieceNo)
 	{
-		if(cachedPieces*(long)PIECE_SIZE > Utils.propLong("max_cached_content"))
+		if(cachedPieces*(long)PIECE_SIZE > Utils.propLong("fs_max_cached_content"))
 		{
 			this.flushContentCache(pieceNo);
 		}
@@ -213,28 +209,31 @@ public class DifsysFile
 			{
 				String filename = STORAGE_DIR+fullPath+'.'+(pieceNo);
 				FileInputStream fis;
-				synchronized(FILEPIECE_LOCK)
+//				synchronized(FILEPIECE_LOCK)
+//				{
+//					noFlush = true;
+//					while(!Utils.fileExists(filename))
+//					{
+//						try
+//						{
+//							FILEPIECE_LOCK.wait(Utils.propInt("fs_piece_wait_timeout"));
+//						}
+//						catch (InterruptedException ex){}
+//					}
+//					noFlush = false;
+//				}
+				if(Utils.fileExists(filename))
 				{
-					noFlush = true;
-					while(!Utils.fileExists(filename))
+					try
 					{
-						try
-						{
-							FILEPIECE_LOCK.wait(Utils.propInt("piece_wait_timeout"));
-						}
-						catch (InterruptedException ex){}
+						fis = new FileInputStream(new File(filename));
+						fis.read(content.content);
+						fis.close();
 					}
-					noFlush = false;
-				}
-				try
-				{
-					fis = new FileInputStream(new File(filename));
-					fis.read(content.content);
-					fis.close();
-				}
-				catch (IOException ex)
-				{
-					Logger.getLogger(DifsysFile.class.getName()).log(Level.SEVERE, null, ex);
+					catch (IOException ex)
+					{
+						Logger.getLogger(DifsysFile.class.getName()).log(Level.SEVERE, null, ex);
+					}
 				}
 			}
 			
@@ -302,25 +301,24 @@ public class DifsysFile
 	
 	public void truncate(long offset)
 	{
-		int content_offset = (int)(offset % PIECE_SIZE);
-		long file_offset = offset - content_offset;
-		int pieceNo = (int)(file_offset/PIECE_SIZE);
-		if(offset < size)
-		{
-			for(int i=pieceNo;i<contents.size();i++)
-			{
-				contents.remove(i);
-				Utils.delete(STORAGE_DIR+fullPath+'.'+(pieceNo));
-			}
-		}
-		else
-		{
-			for(int i=contents.size();i<pieceNo+1;i++)
-			{
-				contents.put(i, new PieceContent());				
-				cachedPieces++;
-			}
-		}
+//		int content_offset = (int)(offset % PIECE_SIZE);
+//		long file_offset = offset - content_offset;
+//		int pieceNo = (int)(file_offset/PIECE_SIZE);
+//		if(offset < size)
+//		{
+//			for(int i=pieceNo;i<contents.size();i++)
+//			{
+//				contents.remove(i);
+//				Utils.delete(STORAGE_DIR+fullPath+'.'+(pieceNo));
+//			}
+//		}
+//		else
+//		{
+//			for(int i=contents.size();i<pieceNo+1;i++)
+//			{
+//				getPieceContent(i).edited = true;
+//			}
+//		}
 		size = offset;
 	}
 	
@@ -425,8 +423,8 @@ public class DifsysFile
 	public synchronized static void flushCache(boolean all)
 	{
 		long time = Utils.time();
-		long last_access_to_flush = Utils.propLong("last_access_to_flush");
-		long duration = Utils.propLong("flush_time_limit");
+		long last_access_to_flush = Utils.propLong("fs_last_access_to_flush");
+		long duration = Utils.propLong("fs_flush_time_limit");
 		LinkedList<String> remove = new LinkedList<>();
 		for(String path: files.keySet())
 		{
@@ -455,7 +453,7 @@ public class DifsysFile
 		System.gc();
 		
 		
-//		if(deletedFiles.size() > Utils.propInt("max_cached_files"))
+//		if(deletedFiles.size() > Utils.propInt("fs_max_cached_files"))
 //		{
 //			BasicDBList in = new BasicDBList();
 //			for(String deletedPath : deletedFiles)
@@ -509,5 +507,12 @@ public class DifsysFile
 		{
 			f.FILEPIECE_LOCK.notifyAll();
 		}
+	}
+	
+	public static void addFile(String path, long size)
+	{
+		DifsysFile f = DifsysFile.get(path, false, true);
+		f.size = size;
+		f.addDirContent();
 	}
 }
