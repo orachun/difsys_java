@@ -18,7 +18,6 @@ import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.HashSet;
 import java.util.LinkedList;
-import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -514,5 +513,10 @@ public class DifsysFile
 		DifsysFile f = DifsysFile.get(path, false, true);
 		f.size = size;
 		f.addDirContent();
+	}
+	
+	public static void addPieceContent(String path, int no, byte[] content)
+	{
+		
 	}
 }
