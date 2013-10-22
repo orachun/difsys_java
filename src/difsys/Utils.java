@@ -18,10 +18,13 @@ import java.util.logging.Logger;
  */
 public class Utils 
 {
-	private static Properties P;
+	private static Properties P = new Properties();
+	public static void initP(Properties p)
+	{
+		P.putAll(p);
+	}
 	public static void initP(String configFileName)
 	{
-		P = new Properties();
 		try
 		{
 			P.load(new FileInputStream(configFileName));

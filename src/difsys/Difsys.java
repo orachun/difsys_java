@@ -6,6 +6,7 @@ package difsys;
 
 import java.io.File;
 import java.nio.ByteBuffer;
+import java.util.Properties;
 import net.fusejna.DirectoryFiller;
 import net.fusejna.ErrorCodes;
 import net.fusejna.FuseException;
@@ -35,6 +36,18 @@ public class Difsys extends FuseFilesystemAdapterAssumeImplemented
 		System.out.println("Ready.");
 	}
 	
+	public Difsys(String rootDir, Properties p) throws FuseException
+	{
+		System.out.println("Initializing file system...");
+		Utils.initP(p);
+		Utils.mkdir(Utils.prop("fs_storage_dir"));
+		Utils.mkdir(rootDir);
+		CMD_PREFIX = Utils.prop("fs_cmd_prefix");
+		DifsysFile.init();
+		DifsysFile.get("/");
+		this.log(false).mount(new File(rootDir), false);
+		System.out.println("Ready.");
+	}
 
 	@Override
 	protected String[] getOptions()
